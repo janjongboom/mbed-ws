@@ -1,0 +1,10 @@
+{
+    "name": "mbed-ws",
+    "config": {
+        "use-mbed-http": {
+            "help": "Whether to use Mbed HTTP - if disabled, it will remove any code related to Mbed HTTP",
+            "value": true,
+            "macro_name": "MBED_WS_HAS_MBED_HTTP"
+        }
+    }
+}
