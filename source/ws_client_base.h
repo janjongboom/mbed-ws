@@ -112,12 +112,13 @@ public:
           , _network(network)
 #ifdef MBED_WS_HAS_MBED_HTTP
           , _url(url)
-          , _parsed_url(url)
+          , _parsed_url(new ParsedUrl(url))
 #endif
     {
         _callbacks = nullptr;
         _ping_counter = 0;
         _pong_counter = 0;
+        _ping_ev = 0;
     }
 
     /**
@@ -125,12 +126,28 @@ public:
      */
     virtual ~WebsocketClientBase() {
         if (_socket && _we_created_socket) {
+            _socket->set_blocking(true);
+            _socket->sigio(NULL);
+            _socket->close();
             delete _socket;
+        }
+
+        if (_parsed_url) {
+            delete _parsed_url;
+        }
+
+        if (_ping_ev != 0) {
+            _queue->cancel(_ping_ev);
         }
     }
 
     int connect(ws_callbacks_t *callbacks) {
         _callbacks = callbacks;
+
+        _socket->set_blocking(true);
+        _socket->sigio(NULL);
+        _ping_counter = 0;
+        _pong_counter = 0;
 
 #ifdef MBED_WS_HAS_MBED_HTTP
         if (!_network) {
@@ -139,7 +156,7 @@ public:
 
         nsapi_error_t r;
 
-        r = connect_socket(_parsed_url.host(), _parsed_url.port());
+        r = connect_socket(_parsed_url->host(), _parsed_url->port());
         if (r != NSAPI_ERROR_OK) {
             return r;
         }
@@ -275,6 +292,27 @@ public:
         return 0;
     }
 
+#ifdef MBED_WS_HAS_MBED_HTTP
+    void set_url(const char *url) {
+        delete _parsed_url;
+
+        _parsed_url = new ParsedUrl(url);
+    }
+#endif
+
+    /**
+     * Disconnect manually
+     */
+    void disconnect() {
+        // stop handling ping/pong
+        if (_ping_ev != 0) {
+            _queue->cancel(_ping_ev);
+            _ping_ev = 0;
+        }
+
+        _socket->close(); // ignore return value here...
+    }
+
 protected:
     virtual nsapi_error_t connect_socket(char *host, uint16_t port) = 0;
 
@@ -316,10 +354,7 @@ private:
         printf("handle_disconnect\n");
 #endif
 
-        // stop handling ping/pong
-        _queue->cancel(_ping_ev);
-
-        _socket->close(); // ignore return value here...
+        disconnect();
 
         if (_callbacks && _callbacks->disconnect_callback) {
             _callbacks->disconnect_callback();
@@ -449,6 +484,10 @@ private:
                 return handle_rx_msg(msg, c);
 
             case WS_PARSING_PAYLOAD:
+                if (msg->payload_len == 0) {
+                    msg->state = WS_PARSING_DONE;
+                    return handle_rx_msg(msg, c);
+                }
                 if (msg->payload != nullptr) {
                     msg->payload[msg->payload_cur_pos] = c ^ msg->mask[msg->payload_cur_pos % 4];
                 }
@@ -469,6 +508,8 @@ private:
     }
 
     void handle_socket_sigio() {
+        if (!_socket) return;
+
         uint8_t rx_buffer[MBED_WS_RX_BUFFER_SIZE];
 
         nsapi_size_or_error_t r = _socket->recv(rx_buffer, sizeof(rx_buffer));
@@ -476,6 +517,8 @@ private:
         printf("socket.recv returned %d\n", r); // 0 would be fine, would block would be fine too
 #endif
         if (r > 0) {
+            _curr_msg.state = WS_PARSING_NONE;
+
             for (int ix = 0; ix < r; ix++) {
                 WS_PARSING_STATE s = handle_rx_msg(&_curr_msg, rx_buffer[ix]);
                 if (s == WS_PARSING_DONE) {
@@ -545,7 +588,7 @@ private:
     NetworkInterface *_network;
 #ifdef MBED_WS_HAS_MBED_HTTP
     const char *_url;
-    ParsedUrl _parsed_url;
+    ParsedUrl *_parsed_url;
 #endif
     Socket *_socket;
 
