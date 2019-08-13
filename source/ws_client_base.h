@@ -114,6 +114,7 @@ public:
           , _url(url)
           , _parsed_url(new ParsedUrl(url))
 #endif
+          , _socket(NULL)
     {
         _callbacks = nullptr;
         _ping_counter = 0;
@@ -144,8 +145,11 @@ public:
     int connect(ws_callbacks_t *callbacks) {
         _callbacks = callbacks;
 
-        _socket->set_blocking(true);
-        _socket->sigio(NULL);
+        if (_socket) {
+            _socket->set_blocking(true);
+            _socket->sigio(NULL);
+        }
+
         _ping_counter = 0;
         _pong_counter = 0;
 
@@ -156,8 +160,15 @@ public:
 
         nsapi_error_t r;
 
+#ifdef MBED_WS_DEBUG
+        printf("Connecting to %s:%u\n", _parsed_url->host(), _parsed_url->port());
+#endif
+
         r = connect_socket(_parsed_url->host(), _parsed_url->port());
         if (r != NSAPI_ERROR_OK) {
+#ifdef MBED_WS_DEBUG
+            printf("Failed to connect socket (%d)\n", r);
+#endif
             return r;
         }
 

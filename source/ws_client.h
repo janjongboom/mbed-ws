@@ -33,8 +33,8 @@ public:
     WsClient(EventQueue *queue, NetworkInterface *network, const char *url)
         : WebsocketClientBase(queue, network, url)
     {
-        _socket = new TCPSocket();
         _we_created_socket = true;
+        _socket = NULL;
     }
 #endif
 
@@ -53,6 +53,16 @@ public:
 
 protected:
     virtual nsapi_error_t connect_socket(char *host, uint16_t port) {
+        if (_socket != NULL) {
+            TCPSocket *old_socket = (TCPSocket*)_socket;
+            old_socket->set_blocking(true);
+            old_socket->sigio(NULL);
+            old_socket->close();
+            delete old_socket;
+        }
+
+        _socket = new TCPSocket();
+
         nsapi_error_t r;
         TCPSocket *socket = (TCPSocket*)_socket;
         r = socket->open(_network);
