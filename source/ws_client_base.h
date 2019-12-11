@@ -42,6 +42,8 @@
 #define MBED_WS_PING_INTERVAL_MS 10000
 #endif
 
+// #define MBED_WS_DEBUG 1
+
 // this library returns nsapi_error_t codes, plus these
 typedef enum {
     MBED_WS_ERROR_OK                =  0,        /*!< no error */
@@ -322,6 +324,39 @@ public:
         }
 
         _socket->close(); // ignore return value here...
+    }
+
+    /**
+     * Pause the ping/pong disconnect mechanism.
+     * This is useful if you have a long running process (e.g. sampling data)
+     * that runs at a higher priority than the thread that handles the websocket messages.
+     * Otherwise it'll trigger an instant disconnect when that thread gets priority back.
+     * Note that this will still detect socket close events on the web socket.
+     */
+    void pause_disconnect_checker() {
+#ifdef MBED_WS_DEBUG
+        printf("ws pause_disconnect_checker\n");
+#endif
+        if (_ping_ev != 0) {
+            _queue->cancel(_ping_ev);
+            _ping_ev = 0;
+        }
+    }
+
+    /**
+     * Resume the ping/pong disconnect mechanism.
+     * This is useful if you have a long running process (e.g. sampling data)
+     * that runs at a higher priority than the thread that handles the websocket messages.
+     * See also `pause_disconnect_checker`.
+     */
+    void resume_disconnect_checker() {
+#ifdef MBED_WS_DEBUG
+        printf("ws resume_disconnect_checker\n");
+#endif
+
+        _ping_counter = _pong_counter = 0;
+
+        _ping_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS, callback(this, &WebsocketClientBase::ping));
     }
 
 protected:
