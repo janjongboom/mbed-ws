@@ -20,6 +20,7 @@
 
 #include "mbed.h"
 #include "Socket.h"
+#include "mbedtls/base64.h"
 
 #ifdef MBED_WS_HAS_MBED_HTTP
 #include "http_request.h"
@@ -40,6 +41,10 @@
 
 #ifndef MBED_WS_PING_INTERVAL_MS
 #define MBED_WS_PING_INTERVAL_MS 10000
+#endif
+
+#ifndef MBED_WS_USER_AGENT
+#define MBED_WS_USER_AGENT "Mbed-WS-Client"
 #endif
 
 // #define MBED_WS_DEBUG 1
@@ -174,22 +179,24 @@ public:
             return r;
         }
 
-        // @todo: calculate new keys myself
-        // var key = 'L159VM0TWUzyDxwJEIEzjw=='
-        // var combined = 'L159VM0TWUzyDxwJEIEzjw==' + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-        // var h = require('crypto').createHash('sha1')
-        // h.update(combined).digest('base64')
-
         // This might seem weird... because we support both ws:// and wss://
         // but we already have a good working socket with TLS connection, and so the only thing
         // we do is act on that socket. So it's fine to reference HttpRequest
         // the TCPSocket casting is also weird, but it's just setting pointers, so it's fine for now
         // This might break if Mbed HTTP changes inner workings though!!
+
+        uint8_t randomBytes[16], wsSecKey[24];
+        for (size_t i = 0; i < 16; i++) {
+            randomBytes[i] = rand();
+        }
+        mbedtls_base64_encode(&wsSecKey[0], sizeof(wsSecKey), NULL, &randomBytes[0], sizeof(randomBytes));
+
         HttpRequest* req = new HttpRequest((TCPSocket*)_socket, HTTP_GET, _url);
         req->set_header("Upgrade", "Websocket");
         req->set_header("Connection", "Upgrade");
         req->set_header("Sec-WebSocket-Key", "L159VM0TWUzyDxwJEIEzjw==");
         req->set_header("Sec-WebSocket-Version", "13");
+        req->set_header("User-Agent", MBED_WS_USER_AGENT);
 
         HttpResponse* res = req->send();
         if (!res) {
