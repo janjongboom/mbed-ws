@@ -21,6 +21,8 @@
 #include "mbed.h"
 #include "Socket.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/sha1.h"
+#include "randLIB.h"
 
 #ifdef MBED_WS_HAS_MBED_HTTP
 #include "http_request.h"
@@ -179,22 +181,25 @@ public:
             return r;
         }
 
+        size_t key_len;
+        char random_bytes[16], ws_sec_key[25];
+        for (size_t i = 0; i < 16; i++) {
+            random_bytes[i] = randLIB_get_8bit();
+        }
+        mbedtls_base64_encode((unsigned char *)&ws_sec_key[0], sizeof(ws_sec_key), &key_len, (const unsigned char *)&random_bytes[0], sizeof(random_bytes));
+        #ifdef MBED_WS_DEBUG
+        printf("Sec-WebSocket-Key: %s\n", ws_sec_key);
+        #endif
+
         // This might seem weird... because we support both ws:// and wss://
         // but we already have a good working socket with TLS connection, and so the only thing
         // we do is act on that socket. So it's fine to reference HttpRequest
         // the TCPSocket casting is also weird, but it's just setting pointers, so it's fine for now
         // This might break if Mbed HTTP changes inner workings though!!
-
-        uint8_t randomBytes[16], wsSecKey[24];
-        for (size_t i = 0; i < 16; i++) {
-            randomBytes[i] = rand();
-        }
-        mbedtls_base64_encode(&wsSecKey[0], sizeof(wsSecKey), NULL, &randomBytes[0], sizeof(randomBytes));
-
         HttpRequest* req = new HttpRequest((TCPSocket*)_socket, HTTP_GET, _url);
         req->set_header("Upgrade", "Websocket");
         req->set_header("Connection", "Upgrade");
-        req->set_header("Sec-WebSocket-Key", "L159VM0TWUzyDxwJEIEzjw==");
+        req->set_header("Sec-WebSocket-Key", string(ws_sec_key));
         req->set_header("Sec-WebSocket-Version", "13");
         req->set_header("User-Agent", MBED_WS_USER_AGENT);
 
@@ -214,7 +219,16 @@ public:
         bool has_valid_upgrade = false;
         bool has_valid_websocket_accept = false;
 
+        unsigned char ws_sec_accept_hash[20] = {0};
+        unsigned char ws_sec_accept_buffer[61] = {0};
+        const char guid_str[] = {"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"};
+        char ws_sec_accept[29];
+        sprintf((char*)ws_sec_accept_buffer,"%s%s", ws_sec_key, guid_str);
+        mbedtls_sha1(ws_sec_accept_buffer, 60, ws_sec_accept_hash);
+        mbedtls_base64_encode( (unsigned char *)&ws_sec_accept, sizeof(ws_sec_accept), &key_len, ws_sec_accept_hash, 20);
+
 #ifdef MBED_WS_DEBUG
+        printf("Calculated Sec-Websocket-Accpet: %s\n", ws_sec_accept);
         printf("Headers:\n");
 #endif
         for (size_t ix = 0; ix < res->get_headers_length(); ix++) {
@@ -227,7 +241,7 @@ public:
                 has_valid_upgrade = true;
             }
             if (strcmp_insensitive(header_key, "Sec-WebSocket-Accept") == 0 &&
-                strcmp_insensitive(header_value, "DdLWT/1JcX+nQFHebYP+rqEx5xI=") == 0)
+                strcmp_insensitive(header_value, ws_sec_accept) == 0)
             {
                 has_valid_websocket_accept = true;
             }
