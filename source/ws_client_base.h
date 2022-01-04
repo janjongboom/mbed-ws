@@ -228,7 +228,7 @@ public:
         mbedtls_base64_encode( (unsigned char *)&ws_sec_accept, sizeof(ws_sec_accept), &key_len, ws_sec_accept_hash, 20);
 
 #ifdef MBED_WS_DEBUG
-        printf("Calculated Sec-Websocket-Accpet: %s\n", ws_sec_accept);
+        printf("Calculated Sec-WebSocket-Accept: %s\n", ws_sec_accept);
         printf("Headers:\n");
 #endif
         for (size_t ix = 0; ix < res->get_headers_length(); ix++) {
