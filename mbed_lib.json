@@ -8,7 +8,7 @@
         },
         "user-agent": {
             "help": "User-Agent header presented to server",
-            "value": "Mbed-WS-Client",
+            "value": "\"Mbed-WS-Client\"",
             "macro_name": "MBED_WS_USER_AGENT"
         }
     }
