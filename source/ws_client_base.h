@@ -49,7 +49,7 @@
 #define MBED_WS_USER_AGENT "Mbed-WS-Client"
 #endif
 
-// #define MBED_WS_DEBUG 1
+//#define MBED_WS_DEBUG 1
 
 // this library returns nsapi_error_t codes, plus these
 typedef enum {
@@ -128,7 +128,9 @@ public:
         _callbacks = nullptr;
         _ping_counter = 0;
         _pong_counter = 0;
+        _ping_failure_counter = 0;
         _ping_ev = 0;
+        _ping_counter_reset_ev = 0;
     }
 
     /**
@@ -149,6 +151,10 @@ public:
         if (_ping_ev != 0) {
             _queue->cancel(_ping_ev);
         }
+
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+        }
     }
 
     int connect(ws_callbacks_t *callbacks) {
@@ -161,6 +167,7 @@ public:
 
         _ping_counter = 0;
         _pong_counter = 0;
+        _ping_failure_counter = 0;
 
 #ifdef MBED_WS_HAS_MBED_HTTP
         if (!_network) {
@@ -280,6 +287,7 @@ public:
 
         // set ping interval
         _ping_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS, callback(this, &WebsocketClientBase::ping));
+        _ping_counter_reset_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS * 3, callback(this, &WebsocketClientBase::resetPingFailureCounter));
 
         return NSAPI_ERROR_OK;
     }
@@ -344,6 +352,11 @@ public:
             _ping_ev = 0;
         }
 
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+            _ping_counter_reset_ev = 0;
+        }
+
         _socket->close(); // ignore return value here...
     }
 
@@ -362,6 +375,11 @@ public:
             _queue->cancel(_ping_ev);
             _ping_ev = 0;
         }
+
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+            _ping_counter_reset_ev = 0;
+        }
     }
 
     /**
@@ -375,9 +393,10 @@ public:
         printf("ws resume_disconnect_checker\n");
 #endif
 
-        _ping_counter = _pong_counter = 0;
+        _ping_counter = _pong_counter = _ping_failure_counter = 0;
 
         _ping_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS, callback(this, &WebsocketClientBase::ping));
+        _ping_counter_reset_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS * 3, callback(this, &WebsocketClientBase::resetPingFailureCounter));
     }
 
 protected:
@@ -433,7 +452,11 @@ private:
 #ifdef MBED_WS_DEBUG
             printf("Ping and pong out of sync: ping=%u pong=%u\n", _ping_counter, _pong_counter);
 #endif
-            handle_disconnect();
+            _ping_counter = _pong_counter;
+            _ping_failure_counter++;
+            if(_ping_failure_counter > 2) {
+                handle_disconnect();
+            }
             return;
         }
 
@@ -446,6 +469,16 @@ private:
         // behavior could also trigger an error from the network...
         if (send(WS_PING_FRAME, nullptr, 0) < 0) {
             handle_disconnect();
+        }
+    }
+
+    void resetPingFailureCounter() {
+
+        if(_ping_failure_counter > 0) {
+#ifdef MBED_WS_DEBUG
+            printf("%llu: ws_ping_failure_counter = %d, reset to 0\n", time(nullptr), _ping_failure_counter);
+#endif
+            _ping_failure_counter = 0;
         }
     }
 
@@ -668,7 +701,9 @@ private:
 
     size_t _ping_counter;
     size_t _pong_counter;
+    size_t _ping_failure_counter;
     int _ping_ev;
+    int _ping_counter_reset_ev;
 
     rx_ws_message_t _curr_msg;
 };
