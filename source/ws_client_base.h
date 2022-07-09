@@ -20,6 +20,9 @@
 
 #include "mbed.h"
 #include "Socket.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/sha1.h"
+#include "randLIB.h"
 
 #ifdef MBED_WS_HAS_MBED_HTTP
 #include "http_request.h"
@@ -42,7 +45,11 @@
 #define MBED_WS_PING_INTERVAL_MS 10000
 #endif
 
-// #define MBED_WS_DEBUG 1
+#ifndef MBED_WS_USER_AGENT
+#define MBED_WS_USER_AGENT "Mbed-WS-Client"
+#endif
+
+//#define MBED_WS_DEBUG 1
 
 // this library returns nsapi_error_t codes, plus these
 typedef enum {
@@ -121,7 +128,9 @@ public:
         _callbacks = nullptr;
         _ping_counter = 0;
         _pong_counter = 0;
+        _ping_failure_counter = 0;
         _ping_ev = 0;
+        _ping_counter_reset_ev = 0;
     }
 
     /**
@@ -142,6 +151,10 @@ public:
         if (_ping_ev != 0) {
             _queue->cancel(_ping_ev);
         }
+
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+        }
     }
 
     int connect(ws_callbacks_t *callbacks) {
@@ -154,6 +167,7 @@ public:
 
         _ping_counter = 0;
         _pong_counter = 0;
+        _ping_failure_counter = 0;
 
 #ifdef MBED_WS_HAS_MBED_HTTP
         if (!_network) {
@@ -174,11 +188,15 @@ public:
             return r;
         }
 
-        // @todo: calculate new keys myself
-        // var key = 'L159VM0TWUzyDxwJEIEzjw=='
-        // var combined = 'L159VM0TWUzyDxwJEIEzjw==' + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-        // var h = require('crypto').createHash('sha1')
-        // h.update(combined).digest('base64')
+        size_t key_len;
+        char random_bytes[16], ws_sec_key[25];
+        for (size_t i = 0; i < 16; i++) {
+            random_bytes[i] = randLIB_get_8bit();
+        }
+        mbedtls_base64_encode((unsigned char *)&ws_sec_key[0], sizeof(ws_sec_key), &key_len, (const unsigned char *)&random_bytes[0], sizeof(random_bytes));
+        #ifdef MBED_WS_DEBUG
+        printf("Sec-WebSocket-Key: %s\n", ws_sec_key);
+        #endif
 
         // This might seem weird... because we support both ws:// and wss://
         // but we already have a good working socket with TLS connection, and so the only thing
@@ -188,8 +206,9 @@ public:
         HttpRequest* req = new HttpRequest((TCPSocket*)_socket, HTTP_GET, _url);
         req->set_header("Upgrade", "Websocket");
         req->set_header("Connection", "Upgrade");
-        req->set_header("Sec-WebSocket-Key", "L159VM0TWUzyDxwJEIEzjw==");
+        req->set_header("Sec-WebSocket-Key", string(ws_sec_key));
         req->set_header("Sec-WebSocket-Version", "13");
+        req->set_header("User-Agent", MBED_WS_USER_AGENT);
 
         HttpResponse* res = req->send();
         if (!res) {
@@ -207,7 +226,16 @@ public:
         bool has_valid_upgrade = false;
         bool has_valid_websocket_accept = false;
 
+        unsigned char ws_sec_accept_hash[20] = {0};
+        unsigned char ws_sec_accept_buffer[61] = {0};
+        const char guid_str[] = {"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"};
+        char ws_sec_accept[29];
+        sprintf((char*)ws_sec_accept_buffer,"%s%s", ws_sec_key, guid_str);
+        mbedtls_sha1(ws_sec_accept_buffer, 60, ws_sec_accept_hash);
+        mbedtls_base64_encode( (unsigned char *)&ws_sec_accept, sizeof(ws_sec_accept), &key_len, ws_sec_accept_hash, 20);
+
 #ifdef MBED_WS_DEBUG
+        printf("Calculated Sec-WebSocket-Accept: %s\n", ws_sec_accept);
         printf("Headers:\n");
 #endif
         for (size_t ix = 0; ix < res->get_headers_length(); ix++) {
@@ -220,7 +248,7 @@ public:
                 has_valid_upgrade = true;
             }
             if (strcmp_insensitive(header_key, "Sec-WebSocket-Accept") == 0 &&
-                strcmp_insensitive(header_value, "DdLWT/1JcX+nQFHebYP+rqEx5xI=") == 0)
+                strcmp_insensitive(header_value, ws_sec_accept) == 0)
             {
                 has_valid_websocket_accept = true;
             }
@@ -259,6 +287,7 @@ public:
 
         // set ping interval
         _ping_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS, callback(this, &WebsocketClientBase::ping));
+        _ping_counter_reset_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS * 3, callback(this, &WebsocketClientBase::resetPingFailureCounter));
 
         return NSAPI_ERROR_OK;
     }
@@ -323,6 +352,11 @@ public:
             _ping_ev = 0;
         }
 
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+            _ping_counter_reset_ev = 0;
+        }
+
         _socket->close(); // ignore return value here...
     }
 
@@ -341,6 +375,11 @@ public:
             _queue->cancel(_ping_ev);
             _ping_ev = 0;
         }
+
+        if(_ping_counter_reset_ev != 0) {
+            _queue->cancel(_ping_counter_reset_ev);
+            _ping_counter_reset_ev = 0;
+        }
     }
 
     /**
@@ -354,9 +393,10 @@ public:
         printf("ws resume_disconnect_checker\n");
 #endif
 
-        _ping_counter = _pong_counter = 0;
+        _ping_counter = _pong_counter = _ping_failure_counter = 0;
 
         _ping_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS, callback(this, &WebsocketClientBase::ping));
+        _ping_counter_reset_ev = _queue->call_every(MBED_WS_PING_INTERVAL_MS * 3, callback(this, &WebsocketClientBase::resetPingFailureCounter));
     }
 
 protected:
@@ -412,7 +452,11 @@ private:
 #ifdef MBED_WS_DEBUG
             printf("Ping and pong out of sync: ping=%u pong=%u\n", _ping_counter, _pong_counter);
 #endif
-            handle_disconnect();
+            _ping_counter = _pong_counter;
+            _ping_failure_counter++;
+            if(_ping_failure_counter > 2) {
+                handle_disconnect();
+            }
             return;
         }
 
@@ -425,6 +469,16 @@ private:
         // behavior could also trigger an error from the network...
         if (send(WS_PING_FRAME, nullptr, 0) < 0) {
             handle_disconnect();
+        }
+    }
+
+    void resetPingFailureCounter() {
+
+        if(_ping_failure_counter > 0) {
+#ifdef MBED_WS_DEBUG
+            printf("%llu: ws_ping_failure_counter = %d, reset to 0\n", time(nullptr), _ping_failure_counter);
+#endif
+            _ping_failure_counter = 0;
         }
     }
 
@@ -647,7 +701,9 @@ private:
 
     size_t _ping_counter;
     size_t _pong_counter;
+    size_t _ping_failure_counter;
     int _ping_ev;
+    int _ping_counter_reset_ev;
 
     rx_ws_message_t _curr_msg;
 };
